@@ -10,8 +10,8 @@ curl -X POST "http://localhost:8000/download-tenders/" \
      -H "Content-Type: application/json" \
      -d '{
           "regions": ["77", "78"], 
-          "start_date": "2024-01-01", 
-          "end_date": "2024-01-31", 
+          "start_date": "2024-10-01", 
+          "end_date": "2024-10-02", 
           "vectorize": true
         }'
 ```

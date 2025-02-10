@@ -178,7 +178,8 @@ def generate_embeddings_batch(texts, tokenizer, model, device):
         with torch.no_grad():
             outputs = model(**inputs)
         
-        embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+        # Use CLS token (first token) instead of mean pooling
+        embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
         
         return embeddings
     except Exception as e:
@@ -223,77 +224,19 @@ def create_tender_embeddings(tenders_summary_path):
     logger.info(f"Created ANNOY index with {len(tenders_metadata)} tenders")
     logger.info(f"ANNOY index and metadata saved in {OUTPUT_DIR}")
 
-def search_similar_tenders(query, top_k=5):
-    tokenizer, model, device = load_ruroberta_model()
-    
-    try:
-        with open(f'{OUTPUT_DIR}/tenders_metadata.json', 'r', encoding='utf-8') as f:
-            tenders_metadata = json.load(f)
-        
-        annoy_index = AnnoyIndex(EMBEDDING_DIM, 'angular')
-        annoy_index.load(f'{OUTPUT_DIR}/tenders_index.ann')
-        
-        query_embedding = generate_embeddings_batch([query], tokenizer, model, device)
-        
-        if query_embedding is None or query_embedding.size == 0:
-            logger.error("Failed to generate embedding for query")
-            return []
-        
-        similar_indices = annoy_index.get_nns_by_vector(
-            query_embedding[0], top_k, include_distances=True
-        )
-        
-        results = []
-        for index, distance in zip(similar_indices[0], similar_indices[1]):
-            metadata = tenders_metadata.get(str(index), {})
-            results.append({
-                'purchase_number': metadata.get('purchase_number', 'N/A'),
-                'tender_name': metadata.get('tender_name', 'N/A'),
-                'similarity_score': 1 - distance 
-            })
-        
-        return results
-    
-    except FileNotFoundError:
-        logger.error("ANNOY index or metadata file not found. Did you run with --vectorize?")
-        return []
-    except Exception as e:
-        logger.error(f"Error searching similar tenders: {e}")
-        return []
-
 def main():
-    parser = argparse.ArgumentParser(description='Download and vectorize tenders from zakupki.gov.ru')
-    parser.add_argument('--regions', nargs='+', 
-                        help='List of region codes to download tenders from')
-    parser.add_argument('--start_date', 
-                        help='Start date for tender search (YYYY-MM-DD)')
-    parser.add_argument('--end_date', 
-                        help='End date for tender search (YYYY-MM-DD)')
-    parser.add_argument('--vectorize', action='store_true',
-                        help='Create vector embeddings for downloaded tenders')
-    parser.add_argument('--query', type=str,
-                        help='Search for similar tenders using a text query')
-    parser.add_argument('--top_k', type=int, default=5,
-                        help='Number of similar tenders to return (default: 5)')
+    parser = argparse.ArgumentParser(description='Download and process tenders')
+    parser.add_argument('--regions', nargs='+', default=['77'], help='List of region codes')
+    parser.add_argument('--start-date', required=True, help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end-date', required=True, help='End date (YYYY-MM-DD)')
+    parser.add_argument('--vectorize', action='store_true', help='Create vector embeddings')
     
     args = parser.parse_args()
     
-    if not any([args.regions, args.start_date, args.end_date]):
-        download_tenders()
-    else:
-        download_tenders(args.regions, args.start_date, args.end_date)
+    download_tenders(args.regions, args.start_date, args.end_date)
     
     if args.vectorize:
-        create_tender_embeddings(Path(OUTPUT_DIR) / 'tenders_summary.json')
-    
-    if args.query:
-        similar_tenders = search_similar_tenders(args.query, args.top_k)
-        
-        print("\nSimilar Tenders:")
-        for i, tender in enumerate(similar_tenders, 1):
-            print(f"{i}. Purchase Number: {tender['purchase_number']}")
-            print(f"   Tender Name: {tender['tender_name']}")
-            print(f"   Similarity Score: {tender['similarity_score']:.4f}\n")
+        create_tender_embeddings(f'{OUTPUT_DIR}/tenders_summary.json')
 
 if __name__ == '__main__':
     main() 
