@@ -15,8 +15,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Копирование файлов зависимостей
 COPY requirements.txt .
 
-# Установка Python зависимостей в виртуальное окружение
+# Установка PyTorch и зависимостей в виртуальное окружение
 RUN . /opt/venv/bin/activate && \
+    pip install --no-cache-dir torch  --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
 # Копирование исходного кода
@@ -25,5 +26,5 @@ COPY . .
 # Открываем порт
 EXPOSE 8000
 
-# Запуск приложения через виртуальное окружение
-CMD ["/opt/venv/bin/python", "main.py"] 
+# Запуск приложения через uvicorn
+CMD ["/opt/venv/bin/uvicorn", "tenders_api:app", "--host", "0.0.0.0", "--port", "8000"] 
