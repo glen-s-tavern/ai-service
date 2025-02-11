@@ -27,4 +27,4 @@ COPY . .
 EXPOSE 8000
 
 # Запуск приложения через uvicorn
-CMD ["/opt/venv/bin/uvicorn", "tenders_api:app", "--host", "0.0.0.0", "--port", "8000"] 
+CMD ["/opt/venv/bin/uvicorn", "tenders_api:app", "--host", "0.0.0.0", "--port", "8000"]
