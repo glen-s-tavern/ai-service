@@ -3,6 +3,7 @@ import json
 from typing import List, Optional
 from datetime import datetime
 import torch
+from tqdm_logger_handler import TqdmLoggingHandler
 import uvicorn
 from fastapi import FastAPI, Query, HTTPException
 from pydantic import BaseModel, Field
@@ -15,28 +16,10 @@ from download_tenders import (
     OUTPUT_DIR,
     EMBEDDING_DIM
 )
-import logging
+from logger_config import setup_logger
 
-# Setup logging with a more specific configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s', # Force override any existing logger configuration
-)
-
-# Create a logger specific to our application
-logger = logging.getLogger(__name__)
-
-# Ensure handlers are cleared to avoid duplicate logs
-#if logger.hasHandlers():
-    #logger.handlers.clear()
-
-# Add console handler
-# Add console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+# Replace all logging setup code with this single line
+logger = setup_logger(__name__)
 
 # Global variables for model and tokenizer
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

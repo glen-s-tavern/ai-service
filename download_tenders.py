@@ -11,13 +11,12 @@ import xml.etree.ElementTree as ET
 from tqdm import tqdm
 
 import torch
+from tqdm_logger_handler import TqdmLoggingHandler
 from transformers import AutoTokenizer, AutoModel
 from annoy import AnnoyIndex
+from logger_config import setup_logger
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
+logger = setup_logger(__name__)
 
 URL = "https://int44.zakupki.gov.ru/eis-integration/services/getDocsIP"
 TOKEN = "3735f424-f2ac-4e0b-9c26-7f5b69e5c04a"
@@ -25,7 +24,7 @@ SUBSYSTEM_TYPE = "PRIZ"
 DOCUMENT_TYPE = "epNotificationEF2020"
 OUTPUT_DIR = './tenders_data'
 EMBEDDING_DIM = 1024
-BATCH_SIZE = 32
+BATCH_SIZE = 1
 
 def get_tenders_and_contents(url, token, region, subsystem_type, document_type, exact_date):
     time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -199,8 +198,9 @@ def create_tender_embeddings(tenders_summary_path, model=None, tokenizer=None, d
 
     tender_texts = list(tenders.values())
     tender_keys = list(tenders.keys())
-
-    for i in range(0, len(tender_texts), BATCH_SIZE):
+    
+    logger.info("Building embeddings...")
+    for i in tqdm(range(0, len(tender_texts), BATCH_SIZE)):
         batch_texts = tender_texts[i:i+BATCH_SIZE]
         batch_keys = tender_keys[i:i+BATCH_SIZE]
 
@@ -240,4 +240,4 @@ def main():
         create_tender_embeddings(f'{OUTPUT_DIR}/tenders_summary.json')
 
 if __name__ == '__main__':
-    main()
+    main() 
