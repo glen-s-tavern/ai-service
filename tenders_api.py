@@ -3,51 +3,24 @@ import json
 from typing import List, Optional
 from datetime import datetime
 import torch
-from tqdm_logger_handler import TqdmLoggingHandler
 import uvicorn
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from transformers import AutoTokenizer, AutoModel
 from annoy import AnnoyIndex
 from download_tenders import (
     download_tenders,
-    create_tender_embeddings,
-    generate_embeddings_batch,
     OUTPUT_DIR,
-    EMBEDDING_DIM
 )
 from logger_config import setup_logger
+from models import ModelFactory, ModelType, BaseEmbeddingModel
 
-# Replace all logging setup code with this single line
 logger = setup_logger(__name__)
-
-# Global variables for model and tokenizer
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = None
-model = None
-
-def init_model():
-    global tokenizer, model
-    try:
-        logger.info("Initializing RuRoBERTa model...")
-        tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruRoberta-large")
-        model = AutoModel.from_pretrained("ai-forever/ruRoberta-large")
-        model = model.to(device)
-        model.eval()
-        logger.info(f"Model initialized successfully on {device}")
-    except Exception as e:
-        logger.error(f"Error initializing model: {str(e)}")
-        raise
 
 app = FastAPI(
     title="Tenders Search API",
     description="API for downloading and searching tenders from zakupki.gov.ru",
     version="1.0.0"
 )
-
-@app.on_event("startup")
-async def startup_event():
-    init_model()
 
 class TenderDownloadRequest(BaseModel):
     regions: Optional[List[str]] = Field(
@@ -68,7 +41,10 @@ class TenderDownloadRequest(BaseModel):
         default=True,
         description="Create vector embeddings for downloaded tenders"
     )
-
+    model_type: Optional[ModelType] = Field(
+        default=ModelType.roberta,
+        description="Model to use for vectorization: 'roberta' or 'word2vec'"
+    )
 
 class TenderSearchRequest(BaseModel):
     query: str = Field(
@@ -78,31 +54,81 @@ class TenderSearchRequest(BaseModel):
         default=5,
         description="Number of similar tenders to return"
     )
-
+    model_type: ModelType = Field(
+        default=ModelType.roberta,
+        description="Model to use for search: 'roberta' or 'word2vec'"
+    )
 
 class TenderSearchResult(BaseModel):
     purchase_number: str
     tender_name: str
     similarity_score: float
 
-@app.post("/download-tenders/",
-          summary="Download tenders from zakupki.gov.ru",
-          description="Download tenders for specified regions and date range")
+def create_tender_embeddings(tenders_summary_path: str, model: BaseEmbeddingModel):
+    """Create embeddings for tenders using the specified model."""
+    try:
+        with open(tenders_summary_path, 'r', encoding='utf-8') as f:
+            tenders = json.load(f)
 
+        tender_texts = list(tenders.values())
+        tender_keys = list(tenders.keys())
 
+        logger.info(f"Building embeddings using {model.__class__.__name__}...")
+        embeddings = model.get_embeddings(tender_texts)
+
+        if embeddings is None:
+            raise ValueError("Failed to generate embeddings")
+
+        # Create and save index
+        annoy_index = AnnoyIndex(model.embedding_dim, 'angular')
+        tenders_metadata = {}
+
+        for i, (embedding, key, text) in enumerate(zip(embeddings, tender_keys, tender_texts)):
+            annoy_index.add_item(i, embedding)
+            tenders_metadata[i] = {
+                'purchase_number': key,
+                'tender_name': text
+            }
+
+        annoy_index.build(10)
+        model_name = model.__class__.__name__.lower().replace('model', '')
+        annoy_index.save(f'{OUTPUT_DIR}/tenders_index_{model_name}.ann')
+
+        with open(f'{OUTPUT_DIR}/tenders_metadata_{model_name}.json', 'w', encoding='utf-8') as f:
+            json.dump(tenders_metadata, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Created ANNOY index with {len(tenders_metadata)} tenders")
+        return True
+    except Exception as e:
+        logger.error(f"Error creating embeddings: {str(e)}")
+        return False
+
+@app.post("/download-tenders/")
 async def api_download_tenders(request: TenderDownloadRequest):
     try:
         if request.start_date:
             datetime.strptime(request.start_date, '%Y-%m-%d')
         if request.end_date:
             datetime.strptime(request.end_date, '%Y-%m-%d')
+
+        # Download tenders
         download_tenders(
             regions=request.regions,
             start_date=request.start_date,
             end_date=request.end_date
         )
+
+        # Create embeddings if requested
         if request.vectorize:
-            create_tender_embeddings(os.path.join(OUTPUT_DIR, 'tenders_summary.json'), model, tokenizer, device)
+            model = ModelFactory.get_model(request.model_type)
+            success = create_tender_embeddings(
+                os.path.join(OUTPUT_DIR, 'tenders_summary.json'),
+                model
+            )
+            if not success:
+                raise Exception("Failed to create embeddings")
+
+        # Return results
         summary_path = os.path.join(OUTPUT_DIR, 'tenders_summary.json')
         if os.path.exists(summary_path):
             with open(summary_path, 'r', encoding='utf-8') as f:
@@ -110,7 +136,8 @@ async def api_download_tenders(request: TenderDownloadRequest):
             return {
                 "message": "Tenders downloaded successfully",
                 "total_tenders": len(tenders_summary),
-                "summary": tenders_summary
+                "summary": tenders_summary,
+                "model_type": request.model_type
             }
         else:
             return {"message": "Tenders downloaded, but no summary found"}
@@ -119,45 +146,44 @@ async def api_download_tenders(request: TenderDownloadRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error downloading tenders: {str(e)}")
 
-
 @app.post("/search-tenders/",
-          response_model=List[TenderSearchResult],
-          summary="Search similar tenders",
-          description="Find similar tenders using semantic search")
+          response_model=List[TenderSearchResult])
 async def api_search_tenders(request: TenderSearchRequest):
     try:
-        logger.info(f"Searching tenders with query: '{request.query}', top_k: {request.top_k}")
+        logger.info(f"Searching tenders with query: '{request.query}', top_k: {request.top_k}, model: {request.model_type}")
 
-        index_path = os.path.join(OUTPUT_DIR, 'tenders_index.ann')
-        metadata_path = os.path.join(OUTPUT_DIR, 'tenders_metadata.json')
+        # Get model instance
+        model = ModelFactory.get_model(request.model_type)
+        model_name = model.__class__.__name__.lower().replace('model', '')
+
+        # Check if index exists
+        index_path = os.path.join(OUTPUT_DIR, f'tenders_index_{model_name}.ann')
+        metadata_path = os.path.join(OUTPUT_DIR, f'tenders_metadata_{model_name}.json')
+
         if not (os.path.exists(index_path) and os.path.exists(metadata_path)):
             raise HTTPException(
                 status_code=400,
-                detail="Embeddings not found. Run download with --vectorize first."
+                detail=f"Embeddings not found for model {request.model_type}. Run download with --vectorize and specified model type first."
             )
 
-        logger.info(f"Loading index from {index_path}")
-        logger.info(f"Loading metadata from {metadata_path}")
-
-        # Load metadata and index
+        # Load metadata
         with open(metadata_path, 'r', encoding='utf-8') as f:
             tenders_metadata = json.load(f)
 
-        annoy_index = AnnoyIndex(EMBEDDING_DIM, 'angular')
+        # Generate query embedding
+        query_embedding = model.get_embeddings([request.query])
+        if query_embedding is None or query_embedding.size == 0:
+            raise ValueError("Failed to generate embedding for query")
+
+        # Load and search index
+        annoy_index = AnnoyIndex(model.embedding_dim, 'angular')
         annoy_index.load(index_path)
 
-        # Generate query embedding
-        query_embedding = generate_embeddings_batch([request.query], tokenizer, model, device)
-
-        if query_embedding is None or query_embedding.size == 0:
-            logger.error("Failed to generate embedding for query")
-            return []
-
-        # Search similar tenders
         similar_indices = annoy_index.get_nns_by_vector(
             query_embedding[0], request.top_k, include_distances=True
         )
 
+        # Format results
         results = []
         for index, distance in zip(similar_indices[0], similar_indices[1]):
             metadata = tenders_metadata.get(str(index), {})
@@ -166,19 +192,16 @@ async def api_search_tenders(request: TenderSearchRequest):
                     TenderSearchResult(
                         purchase_number=metadata.get('purchase_number', 'N/A'),
                         tender_name=metadata.get('tender_name', 'N/A'),
-                        similarity_score=float(1 - distance)  # Convert distance to similarity score
+                        similarity_score=float(1 - distance)
                     )
                 )
 
         logger.info(f"Returning {len(results)} results")
-        for result in results:
-            logger.info(f"Score: {result.similarity_score:.4f} - {result.purchase_number}")
-
         return results
+
     except Exception as e:
         logger.error(f"Error in search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error searching tenders: {str(e)}")
-
 
 if __name__ == "__main__":
     uvicorn.run(

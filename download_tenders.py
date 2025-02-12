@@ -9,12 +9,9 @@ import zipfile
 import io
 import xml.etree.ElementTree as ET
 from tqdm import tqdm
-
-import torch
-from tqdm_logger_handler import TqdmLoggingHandler
-from transformers import AutoTokenizer, AutoModel
 from annoy import AnnoyIndex
 from logger_config import setup_logger
+from models import ModelFactory, ModelType
 
 logger = setup_logger(__name__)
 
@@ -23,7 +20,6 @@ TOKEN = "3735f424-f2ac-4e0b-9c26-7f5b69e5c04a"
 SUBSYSTEM_TYPE = "PRIZ"
 DOCUMENT_TYPE = "epNotificationEF2020"
 OUTPUT_DIR = './tenders_data'
-EMBEDDING_DIM = 1024
 BATCH_SIZE = 1
 
 def get_tenders_and_contents(url, token, region, subsystem_type, document_type, exact_date):
@@ -148,82 +144,47 @@ def download_tenders(regions, start_date, end_date):
 
     logger.info(f"Total tenders downloaded: {len(all_tenders)}")
 
-def load_ruroberta_model():
+def create_tender_embeddings(tenders_summary_path: str, model_type: ModelType = ModelType.roberta):
+    """Create embeddings for tenders using the specified model type."""
     try:
-        # Determine device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {device}")
+        # Get model instance from factory
+        model = ModelFactory.get_model(model_type)
 
-        # Load tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruRoberta-large")
-        model = AutoModel.from_pretrained("ai-forever/ruRoberta-large")
+        with open(tenders_summary_path, 'r', encoding='utf-8') as f:
+            tenders = json.load(f)
 
-        # Move model to GPU if available
-        model = model.to(device)
-        model.eval()
+        tender_texts = list(tenders.values())
+        tender_keys = list(tenders.keys())
 
-        return tokenizer, model, device
+        logger.info(f"Building embeddings using {model.__class__.__name__}...")
+        embeddings = model.get_embeddings(tender_texts)
+
+        if embeddings is None:
+            raise ValueError("Failed to generate embeddings")
+
+        # Create and save index
+        annoy_index = AnnoyIndex(model.embedding_dim, 'angular')
+        tenders_metadata = {}
+
+        for i, (embedding, key, text) in enumerate(zip(embeddings, tender_keys, tender_texts)):
+            annoy_index.add_item(i, embedding)
+            tenders_metadata[i] = {
+                'purchase_number': key,
+                'tender_name': text
+            }
+
+        annoy_index.build(10)
+        model_name = model.__class__.__name__.lower().replace('model', '')
+        annoy_index.save(f'{OUTPUT_DIR}/tenders_index_{model_name}.ann')
+
+        with open(f'{OUTPUT_DIR}/tenders_metadata_{model_name}.json', 'w', encoding='utf-8') as f:
+            json.dump(tenders_metadata, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Created ANNOY index with {len(tenders_metadata)} tenders")
+        return True
     except Exception as e:
-        logger.error(f"Error loading RuRoBERTa model: {e}")
-        raise
-
-def generate_embeddings_batch(texts, tokenizer, model, device):
-    try:
-        inputs = tokenizer(texts, return_tensors="pt", truncation=True,
-                           max_length=512, padding=True, add_special_tokens=True)
-
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = model(**inputs)
-
-        # Use CLS token (first token) instead of mean pooling
-        embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-
-        return embeddings
-    except Exception as e:
-        logger.error(f"Error generating batch embeddings: {e}")
-        return None
-
-def create_tender_embeddings(tenders_summary_path, model=None, tokenizer=None, device=None):
-    with open(tenders_summary_path, 'r', encoding='utf-8') as f:
-        tenders = json.load(f)
-
-    if tokenizer is None or model is None or device is None:
-        tokenizer, model, device = load_ruroberta_model()
-
-    annoy_index = AnnoyIndex(EMBEDDING_DIM, 'angular')
-
-    tenders_metadata = {}
-
-    tender_texts = list(tenders.values())
-    tender_keys = list(tenders.keys())
-    
-    logger.info("Building embeddings...")
-    for i in tqdm(range(0, len(tender_texts), BATCH_SIZE)):
-        batch_texts = tender_texts[i:i+BATCH_SIZE]
-        batch_keys = tender_keys[i:i+BATCH_SIZE]
-
-        embeddings = generate_embeddings_batch(batch_texts, tokenizer, model, device)
-
-        if embeddings is not None:
-            for j, (embedding, key, text) in enumerate(zip(embeddings, batch_keys, batch_texts)):
-                index = i + j
-                annoy_index.add_item(index, embedding)
-
-                tenders_metadata[index] = {
-                    'purchase_number': key,
-                    'tender_name': text
-                }
-
-    annoy_index.build(10)
-    annoy_index.save(f'{OUTPUT_DIR}/tenders_index.ann')
-
-    with open(f'{OUTPUT_DIR}/tenders_metadata.json', 'w', encoding='utf-8') as f:
-        json.dump(tenders_metadata, f, ensure_ascii=False, indent=2)
-
-    logger.info(f"Created ANNOY index with {len(tenders_metadata)} tenders")
-    logger.info(f"ANNOY index and metadata saved in {OUTPUT_DIR}")
+        logger.error(f"Error creating embeddings: {str(e)}")
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description='Download and process tenders')
@@ -231,13 +192,18 @@ def main():
     parser.add_argument('--start-date', required=True, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', required=True, help='End date (YYYY-MM-DD)')
     parser.add_argument('--vectorize', action='store_true', help='Create vector embeddings')
+    parser.add_argument('--model-type', type=str, choices=['roberta', 'fasttext'],
+                       default='roberta', help='Model type for vectorization (roberta or fasttext)')
 
     args = parser.parse_args()
 
     download_tenders(args.regions, args.start_date, args.end_date)
 
     if args.vectorize:
-        create_tender_embeddings(f'{OUTPUT_DIR}/tenders_summary.json')
+        create_tender_embeddings(
+            f'{OUTPUT_DIR}/tenders_summary.json',
+            model_type=ModelType(args.model_type)
+        )
 
 if __name__ == '__main__':
-    main() 
+    main()

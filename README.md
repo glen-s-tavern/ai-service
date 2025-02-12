@@ -9,10 +9,11 @@
 curl -X POST "http://localhost:8000/download-tenders/" \
      -H "Content-Type: application/json" \
      -d '{
-          "regions": ["77", "78"], 
-          "start_date": "2024-10-01", 
-          "end_date": "2024-10-02", 
-          "vectorize": true
+          "regions": ["77", "78"],
+          "start_date": "2024-10-01",
+          "end_date": "2024-10-02",
+          "vectorize": true,
+          "model_type": "roberta"  # Можно выбрать "roberta" или "fasttext"
         }'
 ```
 
@@ -21,10 +22,15 @@ curl -X POST "http://localhost:8000/download-tenders/" \
 curl -X POST "http://localhost:8000/search-tenders/" \
      -H "Content-Type: application/json" \
      -d '{
-            "query": "Медицинские услуги", 
-            "top_k": 5
+            "query": "Медицинские услуги",
+            "top_k": 5,
+            "model_type": "roberta"  # Используйте ту же модель, что и при создании базы
          }'
 ```
+
+Доступные модели для векторизации:
+- `roberta`: RuRoBERTa - трансформер модель, обученная на русском языке
+- `fasttext`: FastText - модель на основе подсловных n-грамм, обученная на Википедии и новостях. Лучше справляется с редкими и неизвестными словами благодаря использованию подсловной информации.
 
 
 
