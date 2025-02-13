@@ -1,5 +1,6 @@
 1. Установить torch под свою систему: https://pytorch.org/get-started/locally/
 2. Установить остальные библиотеки: `pip install -r requirements.txt`
+3. Скачать модель fasttext: `python -c "from huggingface_hub import hf_hub_download;hf_hub_download(repo_id="facebook/fasttext-ru-vectors", filename="model.bin", local_dir='resources')"`
 3. Запустить: `uvicorn tenders_api:app --reload`
 
 Дальше есть 2 функции:
@@ -31,6 +32,69 @@ curl -X POST "http://localhost:8000/search-tenders/" \
 Доступные модели для векторизации:
 - `roberta`: RuRoBERTa - трансформер модель, обученная на русском языке
 - `fasttext`: FastText - модель на основе подсловных n-грамм, обученная на Википедии и новостях. Лучше справляется с редкими и неизвестными словами благодаря использованию подсловной информации.
+
+# Tenders Search Service
+
+## Elasticsearch Setup with Docker
+
+### Prerequisites
+- Docker
+- Docker Compose
+
+### Running Elasticsearch
+
+1. Start Elasticsearch:
+```bash
+docker-compose up -d elasticsearch
+```
+
+2. Verify Elasticsearch is running:
+```bash
+docker-compose ps
+# or
+curl http://localhost:9200
+```
+
+### Indexing Tenders
+
+1. Run the indexing script:
+```bash
+python index_tenders.py
+```
+
+### Searching Tenders
+
+1. Run the search script:
+```bash
+python search_tenders.py
+```
+
+### Stopping Elasticsearch
+
+```bash
+docker-compose down
+```
+
+### Troubleshooting
+
+- Ensure Docker is running
+- Check container logs:
+```bash
+docker-compose logs elasticsearch
+```
+
+### Environment Variables
+
+You can configure Elasticsearch connection using:
+- `ELASTICSEARCH_HOST`
+- `ELASTICSEARCH_PORT`
+- `ELASTICSEARCH_SCHEME`
+
+Example:
+```bash
+export ELASTICSEARCH_HOST=localhost
+export ELASTICSEARCH_PORT=9200
+```
 
 
 

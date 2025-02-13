@@ -19,7 +19,7 @@ URL = "https://int44.zakupki.gov.ru/eis-integration/services/getDocsIP"
 TOKEN = "3735f424-f2ac-4e0b-9c26-7f5b69e5c04a"
 SUBSYSTEM_TYPE = "PRIZ"
 DOCUMENT_TYPE = "epNotificationEF2020"
-OUTPUT_DIR = './tenders_data'
+OUTPUT_DIR = 'resources/tenders_data'
 BATCH_SIZE = 1
 
 def get_tenders_and_contents(url, token, region, subsystem_type, document_type, exact_date):
@@ -109,6 +109,8 @@ def get_tenders_names(files_content):
 
 def download_tenders(regions, start_date, end_date):
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    raw_data_dir = Path(OUTPUT_DIR) / 'raw_data'
+    raw_data_dir.mkdir(parents=True, exist_ok=True)
 
     current_date = datetime.strptime(start_date, '%Y-%m-%d')
     end_date = datetime.strptime(end_date, '%Y-%m-%d')
@@ -130,7 +132,7 @@ def download_tenders(regions, start_date, end_date):
                 tenders = get_tenders_names(files_content)
                 all_tenders.update(tenders)
 
-                region_dir = Path(OUTPUT_DIR) / region / date_str
+                region_dir = raw_data_dir / region / date_str
                 region_dir.mkdir(parents=True, exist_ok=True)
 
                 for filename, content in files_content.items():

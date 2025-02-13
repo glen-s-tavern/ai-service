@@ -20,7 +20,10 @@ RUN . /opt/venv/bin/activate && \
     pip install --no-cache-dir torch  --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
-# Копирование исходного кода
+# Создаем директорию для монтирования модели
+RUN mkdir -p /app/resources
+
+# Копирование исходного кода (без resources)
 COPY . .
 
 # Открываем порт

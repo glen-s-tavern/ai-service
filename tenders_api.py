@@ -13,8 +13,12 @@ from download_tenders import (
 )
 from logger_config import setup_logger
 from models import ModelFactory, ModelType, BaseEmbeddingModel
+import numpy as np
 
 logger = setup_logger(__name__)
+
+# Ensure resources directory exists
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = FastAPI(
     title="Tenders Search API",
@@ -43,7 +47,7 @@ class TenderDownloadRequest(BaseModel):
     )
     model_type: Optional[ModelType] = Field(
         default=ModelType.roberta,
-        description="Model to use for vectorization: 'roberta' or 'word2vec'"
+        description="Model to use for vectorization: 'roberta' or 'fasttext'"
     )
 
 class TenderSearchRequest(BaseModel):
@@ -56,13 +60,22 @@ class TenderSearchRequest(BaseModel):
     )
     model_type: ModelType = Field(
         default=ModelType.roberta,
-        description="Model to use for search: 'roberta' or 'word2vec'"
+        description="Model to use for search: 'roberta' or 'fasttext'"
     )
 
 class TenderSearchResult(BaseModel):
     purchase_number: str
     tender_name: str
     similarity_score: float
+
+def angular_distance_to_similarity(distance: float) -> float:
+    """
+    Convert angular distance to similarity score.
+    For angular distance, similarity = cos(θ) = 1 - distance
+    Normalizes to range [0, 1]
+    """
+    similarity = 1 - (distance / 2)  # Convert angular distance to cosine similarity
+    return max(0.0, min(1.0, similarity))  # Ensure score is between 0 and 1
 
 def create_tender_embeddings(tenders_summary_path: str, model: BaseEmbeddingModel):
     """Create embeddings for tenders using the specified model."""
@@ -192,7 +205,7 @@ async def api_search_tenders(request: TenderSearchRequest):
                     TenderSearchResult(
                         purchase_number=metadata.get('purchase_number', 'N/A'),
                         tender_name=metadata.get('tender_name', 'N/A'),
-                        similarity_score=float(1 - distance)
+                        similarity_score=angular_distance_to_similarity(distance)
                     )
                 )
 
