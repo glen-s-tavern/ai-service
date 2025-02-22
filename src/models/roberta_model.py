@@ -3,7 +3,7 @@ from transformers import AutoTokenizer, AutoModel
 from .base_model import BaseEmbeddingModel
 import numpy as np
 from typing import List
-from logger_config import setup_logger
+from src.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 

@@ -4,3 +4,4 @@ venv
 .venv
 nohup.out
 resources/
+*.db

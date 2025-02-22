@@ -7,19 +7,22 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from annoy import AnnoyIndex
-from download_tenders import (
+from src.chat_gpt import parse_query
+from src.download_tenders import (
     download_tenders,
     OUTPUT_DIR,
 )
-from logger_config import setup_logger
-from models import ModelFactory, ModelType, BaseEmbeddingModel
+from src.logger_config import setup_logger
+from src.models import ModelFactory, ModelType, BaseEmbeddingModel
 import numpy as np
+from src.database import Database
 
 logger = setup_logger(__name__)
+model = ModelFactory.get_model(ModelType.roberta)
 
 # Ensure resources directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
+db = Database()
 app = FastAPI(
     title="Tenders Search API",
     description="API for downloading and searching tenders from zakupki.gov.ru",
@@ -58,14 +61,19 @@ class TenderSearchRequest(BaseModel):
         default=5,
         description="Number of similar tenders to return"
     )
-    model_type: ModelType = Field(
-        default=ModelType.roberta,
-        description="Model to use for search: 'roberta' or 'fasttext'"
-    )
 
 class TenderSearchResult(BaseModel):
-    purchase_number: str
-    tender_name: str
+    id: int
+    name: str
+    price: float
+    law_type: Optional[str]
+    purchase_method: Optional[str]
+    okpd2_code: Optional[str]
+    publish_date: Optional[str]
+    end_date: Optional[str]
+    customer_inn: Optional[str]
+    customer_name: Optional[str]
+    region: Optional[str]
     similarity_score: float
 
 def angular_distance_to_similarity(distance: float) -> float:
@@ -133,27 +141,20 @@ async def api_download_tenders(request: TenderDownloadRequest):
 
         # Create embeddings if requested
         if request.vectorize:
-            model = ModelFactory.get_model(request.model_type)
-            success = create_tender_embeddings(
-                os.path.join(OUTPUT_DIR, 'tenders_summary.json'),
-                model
-            )
+            success = create_tender_embeddings(request.model_type)
             if not success:
                 raise Exception("Failed to create embeddings")
 
         # Return results
-        summary_path = os.path.join(OUTPUT_DIR, 'tenders_summary.json')
-        if os.path.exists(summary_path):
-            with open(summary_path, 'r', encoding='utf-8') as f:
-                tenders_summary = json.load(f)
-            return {
-                "message": "Tenders downloaded successfully",
-                "total_tenders": len(tenders_summary),
-                "summary": tenders_summary,
-                "model_type": request.model_type
-            }
-        else:
-            return {"message": "Tenders downloaded, but no summary found"}
+        db = Database()
+        tenders_summary = db.get_all_tenders()
+        
+        return {
+            "message": "Tenders downloaded successfully",
+            "total_tenders": len(tenders_summary),
+            "summary": tenders_summary,
+            "model_type": request.model_type
+        }
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
@@ -162,59 +163,106 @@ async def api_download_tenders(request: TenderDownloadRequest):
 @app.post("/search-tenders/",
           response_model=List[TenderSearchResult])
 async def api_search_tenders(request: TenderSearchRequest):
-    try:
-        logger.info(f"Searching tenders with query: '{request.query}', top_k: {request.top_k}, model: {request.model_type}")
+    # Log the incoming search request
+    logger.info(f"Received search request: query='{request.query}', top_k={request.top_k}")
+    
+    # Parse the query 
+    parsed_query = parse_query(request.query)
+    logger.info(f"Parsed query={parsed_query}")
+    '''parsed_query = {
+        "query": request.query,
+        "region": "78",
+        "date": "2024-10-01",
+        "document": None,
+        "инн": None,
+        "заказчик": None,
+        "min_price": 100_000,
+        "max_price": 1_000_000,
+        "type": "Электронный аукцион",
+        "окпд2": None
+    }'''
+    
+    # Log parsed query parameters
+    logger.debug(f"Parsed query parameters: {parsed_query}")
+    
+    # Filter tenders based on parsed query parameters
+    tenders = db.get_tenders(
+        region=parsed_query.get("region"),
+        date=parsed_query.get("date"),
+        min_price=parsed_query.get("min_price"),
+        max_price=parsed_query.get("max_price"),
+        law_type=parsed_query.get("document"),
+        purchase_method=parsed_query.get("type"),
+        okpd2_code=parsed_query.get("окпд2"),
+        customer_inn=parsed_query.get("инн"),
+        customer_name=parsed_query.get("заказчик")
+    )
+    
+    # Log number of filtered tenders
+    logger.info(f"Number of filtered tenders: {len(tenders)}")
+    
+    # Generate query embedding
+    query_vector = model.get_embeddings([parsed_query['query']])[0]
 
-        # Get model instance
-        model = ModelFactory.get_model(request.model_type)
-        model_name = model.__class__.__name__.lower().replace('model', '')
+    
+    # Create Annoy index dynamically
+    annoy_index = AnnoyIndex(model.embedding_dim, 'angular')
+    
+    # Store metadata to map index to tender details
+    tenders_metadata = {}
+    
+    # Generate embeddings for filtered tenders
+    valid_tenders_count = 0
+    for i, tender in enumerate(tenders):
+        # Use pre-computed vector if available, otherwise compute
+        if tender['vector'] is not None:
+            tender_vector = tender['vector']
+            
+            # Add to Annoy index
+            annoy_index.add_item(i, tender_vector)
+            valid_tenders_count += 1
+        else:
+            logger.debug(f"Skipping tender {tender['id']} due to missing vector")
 
-        # Check if index exists
-        index_path = os.path.join(OUTPUT_DIR, f'tenders_index_{model_name}.ann')
-        metadata_path = os.path.join(OUTPUT_DIR, f'tenders_metadata_{model_name}.json')
+    # Log number of tenders with valid vectors
+    logger.info(f"Number of tenders with valid vectors: {valid_tenders_count}")
 
-        if not (os.path.exists(index_path) and os.path.exists(metadata_path)):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Embeddings not found for model {request.model_type}. Run download with --vectorize and specified model type first."
-            )
+    # Build the index
+    annoy_index.build(10)  # 10 trees for index construction
+    
+    # Find nearest neighbors
+    nearest_indices = annoy_index.get_nns_by_vector(
+        query_vector, 
+        request.top_k, 
+        include_distances=True
+    )
 
-        # Load metadata
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            tenders_metadata = json.load(f)
-
-        # Generate query embedding
-        query_embedding = model.get_embeddings([request.query])
-        if query_embedding is None or query_embedding.size == 0:
-            raise ValueError("Failed to generate embedding for query")
-
-        # Load and search index
-        annoy_index = AnnoyIndex(model.embedding_dim, 'angular')
-        annoy_index.load(index_path)
-
-        similar_indices = annoy_index.get_nns_by_vector(
-            query_embedding[0], request.top_k, include_distances=True
-        )
-
-        # Format results
-        results = []
-        for index, distance in zip(similar_indices[0], similar_indices[1]):
-            metadata = tenders_metadata.get(str(index), {})
-            if metadata:
-                results.append(
-                    TenderSearchResult(
-                        purchase_number=metadata.get('purchase_number', 'N/A'),
-                        tender_name=metadata.get('tender_name', 'N/A'),
-                        similarity_score=angular_distance_to_similarity(distance)
-                    )
-                )
-
-        logger.info(f"Returning {len(results)} results")
-        return results
-
-    except Exception as e:
-        logger.error(f"Error in search: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error searching tenders: {str(e)}")
+    
+    # Prepare search results
+    search_results = []
+    for idx, distance in zip(nearest_indices[0], nearest_indices[1]):
+        tender = tenders[idx]
+        similarity_score = angular_distance_to_similarity(distance)
+        
+        search_results.append(TenderSearchResult(
+            id=tender['id'],
+            name=tender['name'],
+            price=tender['price'],
+            law_type=tender['law_type'],
+            purchase_method=tender['purchase_method'],
+            okpd2_code=tender['okpd2_code'],
+            publish_date=tender['publish_date'],
+            end_date=tender['end_date'],
+            customer_inn=tender['customer_inn'],
+            customer_name=tender['customer_name'],
+            region=tender['region'],
+            similarity_score=similarity_score
+        ))
+    
+    # Log search results
+    logger.info(f"Returning {len(search_results)} similar tenders")
+    
+    return search_results
 
 if __name__ == "__main__":
     uvicorn.run(

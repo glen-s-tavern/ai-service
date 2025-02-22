@@ -1,5 +1,6 @@
 import logging
-from tqdm_logger_handler import TqdmLoggingHandler
+
+import tqdm
 
 def setup_logger(name):
     # Create a logger specific to the module
@@ -20,3 +21,21 @@ def setup_logger(name):
     logger.addHandler(TqdmLoggingHandler())
     
     return logger 
+
+
+import threading
+
+
+class TqdmLoggingHandler(logging.Handler):
+    def __init__(self, level=logging.INFO):
+        super().__init__(level)
+        self._lock = threading.Lock()
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            with self._lock:
+                tqdm.tqdm.write(msg)
+                self.flush()
+        except Exception:
+            self.handleError(record)  

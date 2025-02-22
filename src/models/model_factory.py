@@ -3,7 +3,7 @@ from typing import Optional
 from .base_model import BaseEmbeddingModel
 from .roberta_model import RobertaModel
 from .fasttext_model import FastTextModel
-from logger_config import setup_logger
+from src.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 

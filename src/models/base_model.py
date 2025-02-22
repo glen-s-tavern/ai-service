@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List
 import numpy as np
-from logger_config import setup_logger
+from src.logger_config import setup_logger
 
 logger = setup_logger(__name__)
 

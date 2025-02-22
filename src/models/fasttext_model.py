@@ -3,7 +3,7 @@ import gensim.downloader as api
 import numpy as np
 from typing import List
 from .base_model import BaseEmbeddingModel
-from logger_config import setup_logger
+from src.logger_config import setup_logger
 import fasttext
 import os
 import re

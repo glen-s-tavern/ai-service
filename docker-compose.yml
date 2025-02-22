@@ -11,39 +11,6 @@ services:
       - PYTHONUNBUFFERED=1  # For better logging
     restart: unless-stopped
 
-  elasticsearch:
-    image: elasticsearch:8.11.1
-    container_name: tenders-elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "9200:9200"
-      - "9300:9300"
-    volumes:
-      - es-data:/usr/share/elasticsearch/data
-    networks:
-      - tenders-network
-    pull_policy: always  # Always try to pull the latest image
-    restart: unless-stopped
-
-# Optional: Kibana for management (uncomment if needed)
-# kibana:
-#   image: kibana:8.11.1
-#   container_name: tenders-kibana
-#   ports:
-#     - "5601:5601"
-#   environment:
-#     - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-#   depends_on:
-#     - elasticsearch
-#   networks:
-#     - tenders-network
-
-volumes:
-  es-data:
-
 networks:
   tenders-network:
     driver: bridge
